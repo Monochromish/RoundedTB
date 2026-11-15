@@ -157,8 +157,10 @@ namespace RoundedTB
         [return: MarshalAs(UnmanagedType.Bool)]
         public delegate bool SymEnumSymbolsProc(IntPtr pSymInfo, uint SymbolSize, IntPtr UserContext);
 
-        // ANSI SYMBOL_INFO. We only read Address and Flags; Name is a trailing variable-length array
-        // the mask already filtered on, so it is left out of the managed layout.
+        public const uint SYMFLAG_PUBLIC_CODE = 0x00400000;
+
+        // ANSI SYMBOL_INFO. Name is a trailing variable-length array that starts at the byte after
+        // MaxNameLen. Marshal.SizeOf rounds the struct up to its alignment, so that is not the name offset.
         [StructLayout(LayoutKind.Sequential)]
         public struct SYMBOL_INFO
         {

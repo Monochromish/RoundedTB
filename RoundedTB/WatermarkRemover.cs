@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -12,15 +13,21 @@ namespace RoundedTB
     /// UWD2 (https://github.com/machineonamission/uwd2) by Melody.
     ///
     /// The watermark is drawn by <c>CDesktopWatermark::s_DesktopBuildPaint</c> inside shell32.dll.
-    /// We find that function's RVA from Microsoft's public symbols, then overwrite its first
-    /// instruction in the running Explorer with a return, so the paint routine does nothing.
+    /// We find that function from Microsoft's public symbols, then overwrite its first instruction
+    /// in the running Explorer with a return, so the paint routine does nothing.
+    ///
+    /// The public PDB also contains compiler-generated helpers (destructors, catch blocks) whose
+    /// names merely contain <c>s_DesktopBuildPaint</c>. Those are not the paint routine. ARM64X
+    /// shell32 publishes two real copies of the function, and the desktop calls both, so every
+    /// copy is patched.
     ///
     /// Flow (mirrors UWD2):
     ///   1. Find the shell32.dll loaded in the shell's explorer.exe - its base, size, on-disk path
     ///      and the PDB GUID/age of that exact build (read from the loaded image's debug directory).
-    ///   2. Resolve the RVA of s_DesktopBuildPaint. Cached per-build; on a miss we download the
-    ///      matching shell32.pdb from the Microsoft symbol server and let dbghelp enumerate it.
-    ///   3. WriteProcessMemory a return instruction at base + RVA (0xC3 on x64, BR X30 on ARM64).
+    ///   2. Resolve every RVA of CDesktopWatermark::s_DesktopBuildPaint. Cached per-build; on a miss
+    ///      we download the matching shell32.pdb from the Microsoft symbol server and let dbghelp
+    ///      enumerate it.
+    ///   3. WriteProcessMemory a return instruction at each base + RVA (0xC3 on x64, BR X30 on ARM64).
     ///   4. Refresh the desktop so the (now empty) watermark repaint happens immediately.
     ///
     /// The patch lives in Explorer's memory, so it does NOT persist across an Explorer or system
@@ -60,9 +67,15 @@ namespace RoundedTB
 
         // State kept so a disable within the same session can put the original bytes back. Once
         // Explorer restarts this is stale (fresh shell32), so it is keyed by the Explorer PID.
+        // ARM64X shell32 has more than one copy of the paint function, so each copy is its own site.
+        private struct PatchSite
+        {
+            public IntPtr Address;
+            public byte[] Original;
+        }
+
         private static uint patchedPid;
-        private static IntPtr patchedAddress;
-        private static byte[]? originalBytes;
+        private static readonly List<PatchSite> patchedSites = new();
 
         /// <summary>The return instruction to write, for the architecture this process is running as.</summary>
         private static byte[]? GetReturnStub()
@@ -133,48 +146,69 @@ namespace RoundedTB
                 }
                 log($"shell32.dll loaded at {baseAddr:X} ({guidKey}).");
 
-                uint rva = GetCachedRva(guidKey);
-                if (rva == 0)
+                List<uint> rvas = GetCachedRvas(guidKey);
+                if (rvas.Count == 0)
                 {
                     log("Resolving the watermark symbol from Microsoft's symbol server...");
-                    rva = ResolveRva(hProc, baseAddr, size, path, guidKey, log);
-                    if (rva == 0)
+                    rvas = ResolveRvas(hProc, baseAddr, size, path, guidKey, log);
+                    if (rvas.Count == 0)
                     {
                         return Result.Fail($"Couldn't resolve {TargetSymbol} for this build (a pending shell32 update needs a reboot, or symbols are unavailable).");
                     }
-                    CacheRva(guidKey, rva);
+                    CacheRvas(guidKey, rvas);
                 }
-                log($"{TargetSymbol} is at RVA {rva:X}.");
+                log($"{TargetSymbol} at {string.Join(", ", rvas.ConvertAll(r => r.ToString("X")))}.");
 
-                IntPtr target = (IntPtr)(baseAddr + rva);
-
-                byte[] current = new byte[stub.Length];
-                if (!WatermarkInterop.ReadProcessMemory(hProc, target, current, (IntPtr)current.Length, out _))
+                // Originals saved earlier in this session, so a re-apply that finds the stub already
+                // written can still put the real instructions back.
+                var prior = new Dictionary<IntPtr, byte[]>();
+                if (patchedPid == pid)
                 {
-                    return Result.Fail($"Couldn't read the watermark function: error {Marshal.GetLastWin32Error()}.");
+                    foreach (PatchSite site in patchedSites)
+                    {
+                        prior[site.Address] = site.Original;
+                    }
                 }
 
-                if (BytesEqual(current, stub))
+                var applied = new List<PatchSite>(rvas.Count);
+                bool changed = false;
+                foreach (uint rva in rvas)
                 {
-                    // Already patched (by us in a previous tick, or still from an earlier apply).
-                    patchedPid = pid;
-                    patchedAddress = target;
-                    Refresh();
-                    return Result.Ok(false, "Watermark already removed.");
+                    IntPtr target = (IntPtr)(baseAddr + rva);
+                    byte[] current = new byte[stub.Length];
+                    if (!WatermarkInterop.ReadProcessMemory(hProc, target, current, (IntPtr)current.Length, out _))
+                    {
+                        CommitSites(pid, applied);
+                        return Result.Fail($"Couldn't read the watermark function: error {Marshal.GetLastWin32Error()}.");
+                    }
+
+                    byte[] original = current;
+                    if (prior.TryGetValue(target, out byte[]? saved) && saved.Length == stub.Length && !BytesEqual(saved, stub))
+                    {
+                        original = saved;
+                    }
+
+                    if (!BytesEqual(current, stub))
+                    {
+                        if (!WatermarkInterop.WriteProcessMemory(hProc, target, stub, (IntPtr)stub.Length, out _))
+                        {
+                            CommitSites(pid, applied);
+                            return Result.Fail($"Couldn't write the patch: error {Marshal.GetLastWin32Error()}.");
+                        }
+                        WatermarkInterop.FlushInstructionCache(hProc, target, (IntPtr)stub.Length);
+                        changed = true;
+                    }
+
+                    applied.Add(new PatchSite { Address = target, Original = original });
                 }
 
-                // Keep the real original so a disable this session can restore it.
-                patchedPid = pid;
-                patchedAddress = target;
-                originalBytes = current;
-
-                if (!WatermarkInterop.WriteProcessMemory(hProc, target, stub, (IntPtr)stub.Length, out _))
-                {
-                    return Result.Fail($"Couldn't write the patch: error {Marshal.GetLastWin32Error()}.");
-                }
-                WatermarkInterop.FlushInstructionCache(hProc, target, (IntPtr)stub.Length);
+                CommitSites(pid, applied);
 
                 Refresh();
+                if (!changed)
+                {
+                    return Result.Ok(false, "Watermark already removed.");
+                }
                 log("Watermark removed.");
                 return Result.Ok(true, "Watermark removed.");
             }
@@ -195,7 +229,7 @@ namespace RoundedTB
             {
                 try
                 {
-                    if (originalBytes == null || patchedAddress == IntPtr.Zero)
+                    if (patchedSites.Count == 0)
                     {
                         return Result.Ok(false, "Nothing to restore.");
                     }
@@ -219,11 +253,14 @@ namespace RoundedTB
 
                     try
                     {
-                        if (!WatermarkInterop.WriteProcessMemory(hProc, patchedAddress, originalBytes, (IntPtr)originalBytes.Length, out _))
+                        foreach (PatchSite site in patchedSites)
                         {
-                            return Result.Fail($"Couldn't restore the original bytes: error {Marshal.GetLastWin32Error()}.");
+                            if (!WatermarkInterop.WriteProcessMemory(hProc, site.Address, site.Original, (IntPtr)site.Original.Length, out _))
+                            {
+                                return Result.Fail($"Couldn't restore the original bytes: error {Marshal.GetLastWin32Error()}.");
+                            }
+                            WatermarkInterop.FlushInstructionCache(hProc, site.Address, (IntPtr)site.Original.Length);
                         }
-                        WatermarkInterop.FlushInstructionCache(hProc, patchedAddress, (IntPtr)originalBytes.Length);
                         ClearState();
                         Refresh();
                         l("Watermark restored.");
@@ -250,11 +287,21 @@ namespace RoundedTB
             }
         }
 
+        private static void CommitSites(uint pid, List<PatchSite> applied)
+        {
+            if (applied.Count == 0)
+            {
+                return;
+            }
+            patchedPid = pid;
+            patchedSites.Clear();
+            patchedSites.AddRange(applied);
+        }
+
         private static void ClearState()
         {
             patchedPid = 0;
-            patchedAddress = IntPtr.Zero;
-            originalBytes = null;
+            patchedSites.Clear();
         }
 
         // --- Finding the shell's explorer.exe and its shell32 ---
@@ -388,15 +435,16 @@ namespace RoundedTB
 
         // --- Symbol resolution via a downloaded PDB + dbghelp ---
 
-        private static uint ResolveRva(IntPtr hProc, ulong baseAddr, uint size, string imagePath, string guidKey, Action<string> log)
+        private static List<uint> ResolveRvas(IntPtr hProc, ulong baseAddr, uint size, string imagePath, string guidKey, Action<string> log)
         {
+            var none = new List<uint>();
             string pdbDir = Path.Combine(CacheDir, guidKey);
             string pdbPath = Path.Combine(pdbDir, Shell32Name.Replace(".dll", ".pdb"));
             if (!File.Exists(pdbPath))
             {
                 if (!TryDownloadPdb(guidKey, pdbPath, log))
                 {
-                    return 0;
+                    return none;
                 }
             }
 
@@ -406,7 +454,7 @@ namespace RoundedTB
             if (!WatermarkInterop.SymInitialize(hProc, pdbDir, false))
             {
                 log($"SymInitialize failed: error {Marshal.GetLastWin32Error()}.");
-                return 0;
+                return none;
             }
             try
             {
@@ -422,24 +470,30 @@ namespace RoundedTB
                     if (err != 0) // 0 means it was already loaded, which is fine
                     {
                         log($"SymLoadModuleEx failed: error {err}.");
-                        return 0;
+                        return none;
                     }
                     loaded = baseAddr;
                 }
 
-                ulong matchAddress = 0;
-                ulong fallbackAddress = 0;
+                var found = new List<uint>();
                 WatermarkInterop.SymEnumSymbolsProc callback = (pSymInfo, _, _) =>
                 {
                     WatermarkInterop.SYMBOL_INFO info = Marshal.PtrToStructure<WatermarkInterop.SYMBOL_INFO>(pSymInfo);
-                    if (fallbackAddress == 0)
+                    if (!IsDesktopBuildPaint(ReadSymbolName(pSymInfo)))
                     {
-                        fallbackAddress = info.Address;
+                        return true;
                     }
-                    if ((info.Flags & WatermarkInterop.SYMFLAG_FUNCTION) != 0)
+                    // Public code symbols are not flagged SYMFLAG_FUNCTION. Taking the first hit, or
+                    // only a SYMFLAG_FUNCTION hit, selects a compiler-generated destructor instead.
+                    uint interesting = WatermarkInterop.SYMFLAG_PUBLIC_CODE | WatermarkInterop.SYMFLAG_FUNCTION;
+                    if ((info.Flags & interesting) == 0 || info.Address < baseAddr)
                     {
-                        matchAddress = info.Address;
-                        return false; // stop at the first function match
+                        return true;
+                    }
+                    uint rva = (uint)(info.Address - baseAddr);
+                    if (rva != 0 && (size == 0 || rva < size) && !found.Contains(rva))
+                    {
+                        found.Add(rva);
                     }
                     return true;
                 };
@@ -447,18 +501,37 @@ namespace RoundedTB
                 WatermarkInterop.SymEnumSymbols(hProc, loaded, "*" + TargetSymbol + "*", callback, IntPtr.Zero);
                 GC.KeepAlive(callback);
 
-                ulong address = matchAddress != 0 ? matchAddress : fallbackAddress;
-                if (address == 0)
+                if (found.Count == 0 || found.Count > 4)
                 {
-                    return 0;
+                    if (found.Count > 4)
+                    {
+                        log($"Refusing to patch {found.Count} watermark symbols.");
+                    }
+                    return none;
                 }
-                return (uint)(address - baseAddr);
+                found.Sort();
+                return found;
             }
             finally
             {
                 WatermarkInterop.SymUnloadModule64(hProc, baseAddr);
                 WatermarkInterop.SymCleanup(hProc);
             }
+        }
+
+        /// <summary>
+        /// The undecorated public name of the paint routine. Quoted names are compiler helpers
+        /// (<c>'::`1'::dtor$</c> and catch blocks) that share the substring but are not it.
+        /// </summary>
+        private static bool IsDesktopBuildPaint(string name)
+        {
+            return name == "CDesktopWatermark::s_DesktopBuildPaint";
+        }
+
+        private static string ReadSymbolName(IntPtr pSymInfo)
+        {
+            int offset = Marshal.OffsetOf<WatermarkInterop.SYMBOL_INFO>(nameof(WatermarkInterop.SYMBOL_INFO.MaxNameLen)).ToInt32() + sizeof(uint);
+            return Marshal.PtrToStringAnsi(IntPtr.Add(pSymInfo, offset)) ?? string.Empty;
         }
 
         private static bool TryDownloadPdb(string guidKey, string pdbPath, Action<string> log)
@@ -496,32 +569,64 @@ namespace RoundedTB
             }
         }
 
-        // --- RVA cache (a 4-byte file per build, like UWD2's .rva cache) ---
+        // --- RVA cache (one file per build) ---
+        // The old cache was a single RVA and, on builds whose first wildcard hit was a compiler
+        // helper, that RVA was the helper. Those .rva files are ignored; the list lives in .rva2.
 
-        private static uint GetCachedRva(string guidKey)
+        private static List<uint> GetCachedRvas(string guidKey)
         {
             try
             {
-                string file = Path.Combine(CacheDir, guidKey + ".rva");
+                string file = Path.Combine(CacheDir, guidKey + ".rva2");
                 if (!File.Exists(file))
                 {
-                    return 0;
+                    return new List<uint>();
                 }
                 byte[] bytes = File.ReadAllBytes(file);
-                return bytes.Length == 4 ? BitConverter.ToUInt32(bytes, 0) : 0;
+                if (bytes.Length < 8 || bytes.Length % 4 != 0)
+                {
+                    return new List<uint>();
+                }
+                int count = BitConverter.ToInt32(bytes, 0);
+                if (count <= 0 || count > 4 || bytes.Length != 4 + count * 4)
+                {
+                    return new List<uint>();
+                }
+                var rvas = new List<uint>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    uint rva = BitConverter.ToUInt32(bytes, 4 + i * 4);
+                    if (rva == 0)
+                    {
+                        return new List<uint>();
+                    }
+                    rvas.Add(rva);
+                }
+                return rvas;
             }
             catch
             {
-                return 0;
+                return new List<uint>();
             }
         }
 
-        private static void CacheRva(string guidKey, uint rva)
+        private static void CacheRvas(string guidKey, List<uint> rvas)
         {
             try
             {
                 Directory.CreateDirectory(CacheDir);
-                File.WriteAllBytes(Path.Combine(CacheDir, guidKey + ".rva"), BitConverter.GetBytes(rva));
+                byte[] bytes = new byte[4 + rvas.Count * 4];
+                BitConverter.GetBytes(rvas.Count).CopyTo(bytes, 0);
+                for (int i = 0; i < rvas.Count; i++)
+                {
+                    BitConverter.GetBytes(rvas[i]).CopyTo(bytes, 4 + i * 4);
+                }
+                File.WriteAllBytes(Path.Combine(CacheDir, guidKey + ".rva2"), bytes);
+                string legacy = Path.Combine(CacheDir, guidKey + ".rva");
+                if (File.Exists(legacy))
+                {
+                    File.Delete(legacy);
+                }
             }
             catch
             {
