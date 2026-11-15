@@ -50,8 +50,9 @@
     <TrimmerRootAssembly Include="Interop.UIAutomationClient" />
   </ItemGroup>
 
-  <!-- The native DLL RoundedTB loads into Explorer to round the button highlights; it has to match
-       Explorer's architecture, so it is built per runtime with MSVC (see RoundedTB.Tap\build.cmd). -->
+  <!-- The native DLL RoundedTB loads into Explorer to edit the taskbar's XAML (button highlights
+       and the battery hover name). It has to match Explorer's architecture, so it is built per runtime
+       with MSVC (see RoundedTB.Tap\build.cmd). -->
   <PropertyGroup>
     <TapArch Condition="'$(RuntimeIdentifier)' == 'win-arm64'">arm64</TapArch>
     <TapArch Condition="'$(TapArch)' == ''">x64</TapArch>

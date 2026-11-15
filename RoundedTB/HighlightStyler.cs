@@ -5,15 +5,16 @@ using System.Runtime.InteropServices;
 namespace RoundedTB
 {
     /// <summary>
-    /// Rounds the taskbar's button highlights to match the segments by loading RoundedTB.Tap.dll into
-    /// Explorer. The DLL is hooked onto the taskbar thread and told the radius by a window message;
-    /// see Tap.cpp for what happens inside Explorer.
+    /// Loads RoundedTB.Tap.dll into Explorer and drives it with window messages. The DLL rounds the
+    /// taskbar's button highlights and, separately, appends the live charge rate to the battery icon's hover name.
+    /// See Tap.cpp for what happens inside Explorer.
     /// </summary>
     internal sealed class HighlightStyler : IDisposable
     {
         private const int WH_CALLWNDPROC = 4;
 
         private readonly uint applyMessage = RegisterWindowMessageW("RoundedTB.Tap.Apply");
+        private readonly uint batteryMessage = RegisterWindowMessageW("RoundedTB.Tap.Battery");
         private IntPtr module;
         private IntPtr hook;
         private IntPtr hookedTaskbar;
@@ -40,14 +41,33 @@ namespace RoundedTB
         /// <summary>Applies <paramref name="radius"/> (DIPs) to every button highlight; below zero restores Explorer's own.</summary>
         public void Apply(double radius)
         {
-            if (Unavailable != null)
+            if (!EnsureHooked())
             {
                 return;
+            }
+            SendMessageW(hookedTaskbar, applyMessage, new IntPtr((long)Math.Round(radius * 100)), IntPtr.Zero);
+        }
+
+        /// <summary>Appends the charge rate to the battery hover name, or gives that name back to Explorer.</summary>
+        public void ApplyBatteryWattage(bool enabled)
+        {
+            if (!EnsureHooked())
+            {
+                return;
+            }
+            SendMessageW(hookedTaskbar, batteryMessage, new IntPtr(enabled ? 1 : 0), IntPtr.Zero);
+        }
+
+        private bool EnsureHooked()
+        {
+            if (Unavailable != null)
+            {
+                return false;
             }
             IntPtr taskbar = FindWindowW("Shell_TrayWnd", null);
             if (taskbar == IntPtr.Zero)
             {
-                return;
+                return false;
             }
             // A new taskbar window means Explorer restarted, and the DLL went with it.
             if (taskbar != hookedTaskbar)
@@ -57,7 +77,7 @@ namespace RoundedTB
                 hook = SetWindowsHookExW(WH_CALLWNDPROC, GetProcAddress(module, "HookProc"), module, thread);
                 hookedTaskbar = hook != IntPtr.Zero ? taskbar : IntPtr.Zero;
             }
-            SendMessageW(taskbar, applyMessage, new IntPtr((long)Math.Round(radius * 100)), IntPtr.Zero);
+            return hookedTaskbar != IntPtr.Zero;
         }
 
         private void Unhook()

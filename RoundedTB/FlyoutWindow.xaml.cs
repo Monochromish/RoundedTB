@@ -467,6 +467,7 @@ namespace RoundedTB
                 CompositionToggle.IsOn = s.CompositionCompat;
                 AutoHideToggle.IsOn = s.AutoHide == 1;
                 RoundHighlightsToggle.IsOn = s.RoundButtonHighlights;
+                BatteryWattageToggle.IsOn = s.ShowBatteryWattage;
                 WatermarkToggle.IsOn = s.RemoveInsiderWatermark;
 
                 if (SegmentSegmented.SelectedIndex < 0)
@@ -732,6 +733,7 @@ namespace RoundedTB
             s.CompositionCompat = CompositionToggle.IsOn;
             s.AutoHide = AutoHideToggle.IsOn ? 1 : 0;
             s.RoundButtonHighlights = RoundHighlightsToggle.IsOn;
+            s.ShowBatteryWattage = BatteryWattageToggle.IsOn;
             UpdateLabelsAndStates();
             ScheduleApply();
         }

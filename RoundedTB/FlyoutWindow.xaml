@@ -313,6 +313,11 @@
                                     <TextBlock Text="Round button highlights to match" VerticalAlignment="Center" TextWrapping="Wrap" />
                                     <ToggleSwitch x:Name="RoundHighlightsToggle" Style="{StaticResource RowSwitch}" Toggled="Toggle_Toggled" />
                                 </Grid>
+                                <Grid Style="{StaticResource Row}">
+                                    <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Show charge rate and time on battery hover" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    <ToggleSwitch x:Name="BatteryWattageToggle" Style="{StaticResource RowSwitch}" Toggled="Toggle_Toggled" />
+                                </Grid>
 
                                 <TextBlock Style="{StaticResource Strong}" Text="Insider watermark" Margin="0,12,0,4" />
                                 <Grid Style="{StaticResource Row}">

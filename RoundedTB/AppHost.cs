@@ -40,6 +40,7 @@ namespace RoundedTB
         private TrayMenu trayMenu;
         private readonly HighlightStyler highlights = new();
         private bool highlightsApplied;
+        private bool batteryApplied;
         private int workerRestartCount;
         private DateTime workerRestartWindowStart = DateTime.MinValue;
         private int appliedAutoHide = -1;
@@ -195,6 +196,7 @@ namespace RoundedTB
             }
 
             ApplyHighlights();
+            ApplyBatteryWattage();
             background.RequestSettingsRedraw();
             if (!taskbarThread.IsBusy)
             {
@@ -237,6 +239,7 @@ namespace RoundedTB
                 StartWorker();
             }
             ApplyHighlights();
+            ApplyBatteryWattage();
             AutoHide(activeSettings.AutoHide > 0, taskbarDetails);
             appliedAutoHide = activeSettings.AutoHide;
             interaction.WriteJSON();
@@ -262,6 +265,21 @@ namespace RoundedTB
             {
                 highlights.Apply(-1);
                 highlightsApplied = false;
+            }
+        }
+
+        /// <summary>Puts the live charge rate on the taskbar battery tooltip, or gives that tooltip back.</summary>
+        private void ApplyBatteryWattage()
+        {
+            if (activeSettings.ShowBatteryWattage)
+            {
+                highlights.ApplyBatteryWattage(true);
+                batteryApplied = true;
+            }
+            else if (batteryApplied)
+            {
+                highlights.ApplyBatteryWattage(false);
+                batteryApplied = false;
             }
         }
 
@@ -364,6 +382,10 @@ namespace RoundedTB
             {
                 // Give the new taskbar time to build its XAML before attaching to it.
                 Task.Delay(2000).ContinueWith(_ => Dispatcher.TryEnqueue(ApplyHighlights));
+            }
+            if (activeSettings.ShowBatteryWattage)
+            {
+                Task.Delay(2000).ContinueWith(_ => Dispatcher.TryEnqueue(ApplyBatteryWattage));
             }
             if (activeSettings.RemoveInsiderWatermark)
             {
