@@ -114,10 +114,10 @@ namespace RoundedTB
             {
                 activeSettings.FillOnTaskSwitch = false;
             }
-            // Only 0 (always show) and 1 (auto-hide) were ever selectable.
-            if (activeSettings.AutoHide < 0 || activeSettings.AutoHide > 1)
+            // 0 = always show, 1 = always auto-hide, 2 = auto-hide when a window is maximised.
+            if (activeSettings.AutoHide < (int)Types.AutoHideMode.Off || activeSettings.AutoHide > (int)Types.AutoHideMode.OnMaximise)
             {
-                activeSettings.AutoHide = 0;
+                activeSettings.AutoHide = (int)Types.AutoHideMode.Off;
             }
 
             taskbarDetails = Taskbar.GenerateTaskbarInfo(isWindows11);
@@ -203,11 +203,12 @@ namespace RoundedTB
                 StartWorker();
             }
 
-            if (activeSettings.AutoHide != appliedAutoHide)
+            bool autoHideEnabled = activeSettings.AutoHide > (int)Types.AutoHideMode.Off;
+            if (autoHideEnabled != (appliedAutoHide > (int)Types.AutoHideMode.Off))
             {
-                AutoHide(activeSettings.AutoHide > 0, taskbarDetails);
-                appliedAutoHide = activeSettings.AutoHide;
+                AutoHide(autoHideEnabled, taskbarDetails);
             }
+            appliedAutoHide = activeSettings.AutoHide;
             interaction.WriteJSON();
         }
 
@@ -390,6 +391,10 @@ namespace RoundedTB
             if (activeSettings.RemoveInsiderWatermark)
             {
                 SyncWatermarkState(initialDelayMs: 1500);
+            }
+            if (activeSettings.AutoHide > (int)Types.AutoHideMode.Off)
+            {
+                Task.Delay(500).ContinueWith(_ => Dispatcher.TryEnqueue(() => AutoHide(true, taskbarDetails)));
             }
         }
 

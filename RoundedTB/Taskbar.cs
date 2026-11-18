@@ -139,6 +139,18 @@ namespace RoundedTB
         }
 
         /// <summary>
+        /// Clears the custom window region on the specified taskbar without altering layered/opacity state.
+        /// </summary>
+        public static void ClearTaskbarRegion(Types.Taskbar taskbar, Types.Settings settings)
+        {
+            LocalPInvoke.SetWindowRgn(taskbar.TaskbarHwnd, IntPtr.Zero, true);
+            if (settings.CompositionCompat)
+            {
+                Interaction.UpdateTranslucentTB(taskbar.TaskbarHwnd);
+            }
+        }
+
+        /// <summary>
         /// Resets the specified taskbar.
         /// </summary>
         public static void ResetTaskbar(Types.Taskbar taskbar, Types.Settings settings)
@@ -584,6 +596,60 @@ namespace RoundedTB
         }
 
         /// <summary>
+        /// Checks whether the Windows 11 Alt+Tab task switcher is currently open.
+        /// </summary>
+        public static bool IsTaskSwitcherOpen(Types.Settings settings)
+        {
+            if (!settings.FillOnTaskSwitch)
+            {
+                return false;
+            }
+            IntPtr topHwnd = LocalPInvoke.WindowFromPoint(new LocalPInvoke.POINT() { x = 0, y = 0 });
+            StringBuilder windowClass = new StringBuilder(1024);
+            try
+            {
+                LocalPInvoke.GetClassName(topHwnd, windowClass, 1024);
+                return windowClass.ToString() == "XamlExplorerHostIslandWindow";
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Checks whether there is a visible, uncloaked maximised window on the same monitor as the taskbar.
+        /// </summary>
+        public static bool HasMaximizedWindow(IntPtr taskbarHwnd)
+        {
+            IntPtr taskbarMonitor = LocalPInvoke.MonitorFromWindow(taskbarHwnd, 2);
+            List<IntPtr> windowList = Interaction.GetTopLevelWindows();
+            foreach (IntPtr windowHwnd in windowList)
+            {
+                if (!LocalPInvoke.IsWindowVisible(windowHwnd))
+                {
+                    continue;
+                }
+                if (LocalPInvoke.MonitorFromWindow(windowHwnd, 2) != taskbarMonitor)
+                {
+                    continue;
+                }
+                LocalPInvoke.DwmGetWindowAttribute(windowHwnd, LocalPInvoke.DWMWINDOWATTRIBUTE.Cloaked, out bool isCloaked, 0x4);
+                if (isCloaked)
+                {
+                    continue;
+                }
+                LocalPInvoke.WINDOWPLACEMENT lpwndpl = LocalPInvoke.WINDOWPLACEMENT.Default;
+                if (LocalPInvoke.GetWindowPlacement(windowHwnd, ref lpwndpl)
+                    && lpwndpl.ShowCmd == LocalPInvoke.ShowWindowCommands.ShowMaximized)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Checks if the given taskbar should be filled to the edge of the screen.
         /// </summary>
         /// <returns>
@@ -591,47 +657,7 @@ namespace RoundedTB
         /// </returns>
         public static bool TaskbarShouldBeFilled(IntPtr taskbarHwnd, Types.Settings settings)
         {
-            bool retVal = false;
-
-            if (settings.FillOnMaximise)
-            {
-                // Attempt to check for if alt+tab/task switcher is open (Windows 11 only)
-                IntPtr topHwnd = LocalPInvoke.WindowFromPoint(new LocalPInvoke.POINT() { x = 0, y = 0 });
-                StringBuilder windowClass = new StringBuilder(1024);
-                try
-                {
-                    LocalPInvoke.GetClassName(topHwnd, windowClass, 1024);
-
-                    if (windowClass.ToString() == "XamlExplorerHostIslandWindow" && settings.FillOnTaskSwitch)
-                    {
-                        return true;
-                    }
-                }
-                catch (Exception) { }
-
-                List<IntPtr> windowList = Interaction.GetTopLevelWindows();
-                foreach (IntPtr windowHwnd in windowList)
-                {
-                    if (LocalPInvoke.IsWindowVisible(windowHwnd))
-                    {
-                        if (LocalPInvoke.MonitorFromWindow(taskbarHwnd, 2) == LocalPInvoke.MonitorFromWindow(windowHwnd, 2))
-                        {
-                            LocalPInvoke.DwmGetWindowAttribute(windowHwnd, LocalPInvoke.DWMWINDOWATTRIBUTE.Cloaked, out bool isCloaked, 0x4);
-                            if (!isCloaked)
-                            {
-                                LocalPInvoke.WINDOWPLACEMENT lpwndpl = new LocalPInvoke.WINDOWPLACEMENT();
-                                LocalPInvoke.GetWindowPlacement(windowHwnd, ref lpwndpl);
-                                if (lpwndpl.ShowCmd == LocalPInvoke.ShowWindowCommands.ShowMaximized)
-                                {
-                                    retVal = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            return retVal;
+            return settings.FillOnMaximise && (IsTaskSwitcherOpen(settings) || HasMaximizedWindow(taskbarHwnd));
         }
 
         /// <summary>
