@@ -416,7 +416,7 @@ namespace RoundedTB
                     hoverRect.Top = hoverRect.Bottom - 2;
                 }
                 LocalPInvoke.GetCursorPos(out LocalPInvoke.POINT msPt);
-                bool isHoveringOverTaskbar = LocalPInvoke.PtInRect(ref hoverRect, msPt);
+                bool shouldReveal = LocalPInvoke.PtInRect(ref hoverRect, msPt) || Taskbar.IsStartMenuOpen(taskbar.TaskbarHwnd);
 
                 bool hasAlpha = LocalPInvoke.GetLayeredWindowAttributes(taskbar.TaskbarHwnd, out _, out byte taskbarOpacity, out uint flags)
                     && (flags & LocalPInvoke.LWA_ALPHA) != 0;
@@ -425,11 +425,11 @@ namespace RoundedTB
                     taskbarOpacity = 255;
                 }
 
-                if (isHoveringOverTaskbar && taskbarOpacity < 255)
+                if (shouldReveal && taskbarOpacity < 255)
                 {
                     FadeTaskbar(taskbar, show: true, animSpeed);
                 }
-                else if (!isHoveringOverTaskbar && taskbarOpacity > 1)
+                else if (!shouldReveal && taskbarOpacity > 1)
                 {
                     FadeTaskbar(taskbar, show: false, animSpeed);
                 }

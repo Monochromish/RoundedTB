@@ -595,6 +595,70 @@ namespace RoundedTB
             return retVal;
         }
 
+        private static IntPtr cachedFgHwnd;
+        private static uint cachedFgPid;
+        private static bool cachedFgIsStartMenu;
+
+        /// <summary>
+        /// Checks whether the Windows Start menu (or Start search) is currently open on the taskbar's monitor.
+        /// </summary>
+        public static bool IsStartMenuOpen(IntPtr taskbarHwnd)
+        {
+            IntPtr fgHwnd = LocalPInvoke.GetForegroundWindow();
+            if (fgHwnd == IntPtr.Zero || !LocalPInvoke.IsWindowVisible(fgHwnd))
+            {
+                return false;
+            }
+            if (LocalPInvoke.MonitorFromWindow(fgHwnd, 2) != LocalPInvoke.MonitorFromWindow(taskbarHwnd, 2))
+            {
+                return false;
+            }
+            LocalPInvoke.DwmGetWindowAttribute(fgHwnd, LocalPInvoke.DWMWINDOWATTRIBUTE.Cloaked, out bool isCloaked, 0x4);
+            if (isCloaked)
+            {
+                return false;
+            }
+
+            LocalPInvoke.GetWindowThreadProcessId(fgHwnd, out uint pid);
+            if (pid == 0)
+            {
+                return false;
+            }
+            if (fgHwnd != cachedFgHwnd || pid != cachedFgPid)
+            {
+                cachedFgHwnd = fgHwnd;
+                cachedFgPid = pid;
+                cachedFgIsStartMenu = IsStartHostProcess(pid);
+            }
+            return cachedFgIsStartMenu;
+        }
+
+        private static bool IsStartHostProcess(uint pid)
+        {
+            IntPtr hProcess = LocalPInvoke.OpenProcess(LocalPInvoke.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (hProcess == IntPtr.Zero)
+            {
+                return false;
+            }
+            try
+            {
+                StringBuilder path = new StringBuilder(260);
+                int size = path.Capacity;
+                if (!LocalPInvoke.QueryFullProcessImageName(hProcess, 0, path, ref size))
+                {
+                    return false;
+                }
+                string exeName = System.IO.Path.GetFileName(path.ToString());
+                return string.Equals(exeName, "StartMenuExperienceHost.exe", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(exeName, "SearchHost.exe", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(exeName, "SearchApp.exe", StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                LocalPInvoke.CloseHandle(hProcess);
+            }
+        }
+
         /// <summary>
         /// Checks whether the Windows 11 Alt+Tab task switcher is currently open.
         /// </summary>
