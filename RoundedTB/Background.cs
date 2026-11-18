@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -176,6 +176,16 @@ namespace RoundedTB
                             bool shouldFill = settings.FillOnMaximise && (hasMaximisedWindow || Taskbar.IsTaskSwitcherOpen(settings));
                             bool shouldAutoHide = settings.AutoHide == (int)Types.AutoHideMode.Always
                                 || (settings.AutoHide == (int)Types.AutoHideMode.OnMaximise && hasMaximisedWindow);
+
+                            if (settings.AutoHide == (int)Types.AutoHideMode.OnMaximise)
+                            {
+                                SyncOnMaximiseWorkArea(taskbars[current], newTaskbar.TaskbarRect, hasMaximisedWindow);
+                            }
+                            else
+                            {
+                                taskbars[current].WorkAreaExpanded = settings.AutoHide == (int)Types.AutoHideMode.Always;
+                                taskbars[current].WorkAreaSettleTicks = 0;
+                            }
 
                             UpdateAutoHide(taskbars[current], newTaskbar.TaskbarRect, shouldAutoHide);
 
@@ -358,6 +368,41 @@ namespace RoundedTB
             return true;
         }
 
+        private static void SyncOnMaximiseWorkArea(Types.Taskbar taskbar, LocalPInvoke.RECT taskbarRect, bool hasMaximisedWindow)
+        {
+            bool transitioned = taskbar.WorkAreaExpanded != hasMaximisedWindow;
+            if (!transitioned && (!hasMaximisedWindow || taskbar.WorkAreaSettleTicks <= 0))
+            {
+                return;
+            }
+
+            IntPtr monitor = LocalPInvoke.MonitorFromWindow(taskbar.TaskbarHwnd, 2);
+            MonitorStuff.MONITORINFO mi = new MonitorStuff.MONITORINFO
+            {
+                cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MonitorStuff.MONITORINFO>(),
+            };
+            if (!MonitorStuff.GetMonitorInfo(monitor, ref mi))
+            {
+                return;
+            }
+
+            if (transitioned)
+            {
+                taskbar.WorkAreaExpanded = hasMaximisedWindow;
+                LocalPInvoke.RECT targetWorkArea = hasMaximisedWindow
+                    ? mi.rcMonitor
+                    : Taskbar.GetRestoredWorkArea(mi.rcMonitor, taskbarRect);
+                Taskbar.SetMonitorWorkArea(monitor, targetWorkArea, broadcast: false);
+                taskbar.WorkAreaSettleTicks = hasMaximisedWindow ? 5 : 0;
+            }
+
+            if (hasMaximisedWindow && taskbar.WorkAreaSettleTicks > 0)
+            {
+                taskbar.WorkAreaSettleTicks--;
+                Taskbar.ExpandMaximizedWindows(taskbar.TaskbarHwnd, mi.rcMonitor);
+            }
+        }
+
         private static void UpdateAutoHide(Types.Taskbar taskbar, LocalPInvoke.RECT taskbarRect, bool shouldAutoHide)
         {
             const int animSpeed = 15;
@@ -432,6 +477,8 @@ namespace RoundedTB
             if (show)
             {
                 SetTransparent(taskbar.TaskbarHwnd, transparent: false);
+                LocalPInvoke.SetWindowPos(taskbar.TaskbarHwnd, new IntPtr(-1), 0, 0, 0, 0,
+                    LocalPInvoke.SetWindowPosFlags.IgnoreMove | LocalPInvoke.SetWindowPosFlags.IgnoreResize | LocalPInvoke.SetWindowPosFlags.DoNotActivate);
             }
 
             byte[] steps = show ? new byte[] { 63, 127, 191, 255 } : new byte[] { 191, 127, 63, 1 };

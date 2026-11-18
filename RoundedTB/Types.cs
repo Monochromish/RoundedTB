@@ -26,6 +26,8 @@ namespace RoundedTB
             public string TaskbarRes { get; set; } // Resolution of the taskbar as text
             public bool Ignored { get; set; } // Specifies if the taskbar should be ignored when applying changes
             public bool IsFilled { get; set; } // Specifies if the taskbar region is currently cleared for a maximised window
+            public bool WorkAreaExpanded { get; set; } // Tracks whether OnMaximise mode has expanded this monitor's work area
+            public int WorkAreaSettleTicks { get; set; } // Remaining ticks to expand newly maximised windows after work area change
             public bool TaskbarHidden { get; set; } // Specifies if this taskbar is currently hidden by RTB
             public bool TrayHidden { get; set; } // Specifies if the tray is currently hidden by RTB on this taskbar
             public int AppListWidth { get; set; } // Specifies the width of the app list
